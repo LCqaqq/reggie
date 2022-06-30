@@ -14,9 +14,12 @@ import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang.StringUtils;
 import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -29,6 +32,8 @@ public class DishController {
     private DishFlavorService dishFlavorService;
     @Autowired
     private CategoryService categoryService;
+    @Autowired
+    private RedisTemplate redisTemplate;
 
     /**
      * 新增菜品
@@ -123,6 +128,14 @@ public class DishController {
     public R<String> update(@RequestBody DishDto dishDto){
 
         dishService.updateWithFlavor(dishDto);
+
+        //清理所有菜品的缓存数据
+        //Set keys = redisTemplate.keys("dish_*");
+        //redisTemplate.delete(keys);
+        //清理某个分类下的菜品缓存数据
+        String key = "dish_" + dishDto.getCategoryId() + "_1";
+        redisTemplate.delete(key);
+
         return R.success("更新菜品信息成功");
     }
 
@@ -158,6 +171,16 @@ public class DishController {
      */
     @GetMapping("/list")
     public R<List<DishDto>> list(Dish dish){
+        List<DishDto> dishDtos = null;
+
+        //用CategoryId和status动态的拼装成key
+        String key = "dish_"+dish.getCategoryId()+dish.getStatus();
+        //从Redis中获取缓存数据
+        dishDtos = (List<DishDto>) redisTemplate.opsForValue().get(key);
+        if(dishDtos != null){
+            //如果存在直接返回,不需要查询数据库
+            return R.success(dishDtos);
+        }
 
         //构造条件查询器
         LambdaQueryWrapper<Dish> queryWrapper = new LambdaQueryWrapper<>();
@@ -169,7 +192,7 @@ public class DishController {
 
         List<Dish> list =dishService.list(queryWrapper);
         //分别获取每一个菜品的ID，然后查询分类信息，最后封装成含有分类名称DishDto对象
-        List<DishDto> list1 = list.stream().map((item)->{
+        dishDtos = list.stream().map((item)->{
             //创建DishDto对象
             DishDto dishDto = new DishDto();
             //拷贝菜品信息
@@ -178,7 +201,7 @@ public class DishController {
             Long categoryId = item.getCategoryId();
             //根据id查询分类对象
             Category category = categoryService.getById(categoryId);
-            /*
+
             if(category!=null){//查询信息不为空
                 //获取分类名称
                 String categoryName = category.getName();
@@ -186,7 +209,6 @@ public class DishController {
                 dishDto.setCategoryName(categoryName);
             }
 
-             */
             //获取菜品Id
             Long dishId = item.getId();
             //查询菜品口味信息
@@ -198,24 +220,12 @@ public class DishController {
             //返回含有分类名称DishDto对象
             return dishDto;
         }).collect(Collectors.toList());
-        return R.success(list1);
+        //如果不存在，需要查询数据库，并将菜品数据缓存到redis
+        redisTemplate.opsForValue().set(key,dishDtos,60, TimeUnit.MINUTES);
+
+        return R.success(dishDtos);
     }
-    /*@GetMapping("/list")
-    public R<List<Dish>> list(Dish dish){
 
-        //构造条件查询器
-        LambdaQueryWrapper<Dish> queryWrapper = new LambdaQueryWrapper<>();
-        //添加查询条件
-        queryWrapper.eq(dish.getCategoryId()!= null,Dish::getCategoryId,dish.getCategoryId());
-        queryWrapper.eq(Dish::getStatus,1);
-        //添加查询条件
-        queryWrapper.orderByAsc(Dish::getSort).orderByDesc(Dish::getUpdateTime);
-
-        List<Dish> list =dishService.list(queryWrapper);
-
-        return R.success(list);
-    }
-    */
     /**
      * 批量停售
      * @param ids
